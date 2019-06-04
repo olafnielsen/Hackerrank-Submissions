@@ -7,7 +7,7 @@
 #
 # Description:
 '''
-Extracts code submissions from the web site www.hackerrank.com.
+Extracts code submissions from www.hackerrank.com by scraping the site.
 
 Uses python libraries selenium, BeautifulSoup, openpyxl.
 Furthermore, selenium uses the chrome browser and it requires chromedriver.exe
@@ -39,14 +39,15 @@ def writeToExcel(submissions, filename) :
     excelSheet.column_dimensions['A'].width = 35
     excelSheet.column_dimensions['B'].width = 13
     excelSheet.column_dimensions['C'].width = 10
-    excelSheet.column_dimensions['D'].width = 5
+    excelSheet.column_dimensions['D'].width = 6
     excelSheet.column_dimensions['E'].width = 10
     excelSheet.column_dimensions['F'].width = 150
     #                     
-    excelSheet.append(['Challenge (link)', 'Time', 'Status', 'Points', 'Language', 'Code' ])
+    excelSheet.append(['Challenge (link - in Excel click \'enable editing\' if not visible)', 'Time', 'Status', 'Points', 'Language', 'Code' ])
     for col in 'ABCDEF' :
         excelSheet[f'{col}1'].border = Border(top=Side(style='medium'), bottom=Side(style='medium'))
-    excelSheet.title = 'Olaf\'s hackerrank submissions'  
+        excelSheet[f'{col}1'].alignment = Alignment(wrapText = True, vertical='center')
+    excelSheet.title = 'hackerrank submissions'  
     currentRow = 2
     for challenge_text, value in sorted(submissions.items()):
         challenge_href, language, timesubmitted, status, points, code_href, code = value
@@ -217,14 +218,14 @@ def main():
         writeToExcel(submissions, output_filename)
         print ('result written to ' + output_filename)
     finally :
-        # pickle.dump(submissions, open('submissions_debug.pickle', 'wb')) # useful for testing....
+        pickle.dump(submissions, open('submissions_debug.pickle', 'wb')) # useful for testing....
         driver.quit() # kills the browser...
 # main
 
 if __name__ == "__main__" :
-    #submissions = pickle.load(open('submissions_debug.pickle', 'rb')) # useful for testing the Excel output
-    #writeToExcel(submissions, 'testing.xlsx')
+    submissions = pickle.load(open('submissions_debug.pickle', 'rb')) # useful for testing the Excel output
+    writeToExcel(submissions, 'testing.xlsx')
     try :
-        main()
+        pass #main()
     except KeyboardInterrupt : print ('<ctrl>-c')
     quit()
