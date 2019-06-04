@@ -47,7 +47,9 @@ def writeToExcel(submissions, filename) :
     for col in 'ABCDEF' :
         excelSheet[f'{col}1'].border = Border(top=Side(style='medium'), bottom=Side(style='medium'))
         excelSheet[f'{col}1'].alignment = Alignment(wrapText = True, vertical='center')
+    #
     excelSheet.title = 'hackerrank submissions'  
+    #
     currentRow = 2
     for challenge_text, value in sorted(submissions.items()):
         challenge_href, language, timesubmitted, status, points, code_href, code = value
@@ -218,14 +220,14 @@ def main():
         writeToExcel(submissions, output_filename)
         print ('result written to ' + output_filename)
     finally :
-        pickle.dump(submissions, open('submissions_debug.pickle', 'wb')) # useful for testing....
+        #pickle.dump(submissions, open('submissions_debug.pickle', 'wb')) # useful for testing....
         driver.quit() # kills the browser...
 # main
 
 if __name__ == "__main__" :
-    submissions = pickle.load(open('submissions_debug.pickle', 'rb')) # useful for testing the Excel output
-    writeToExcel(submissions, 'testing.xlsx')
+    #submissions = pickle.load(open('submissions_debug.pickle', 'rb')) # useful for testing the Excel output
+    #writeToExcel(submissions, 'testing.xlsx')
     try :
-        pass #main()
+        main()
     except KeyboardInterrupt : print ('<ctrl>-c')
     quit()
