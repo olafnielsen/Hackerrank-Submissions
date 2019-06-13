@@ -128,7 +128,7 @@ def readCode(driver, url) :
                 code.append(element.text)
                 #print (element.text)
                 count += 1
-            if count == 25 : code.append(WARNING_TEXT)
+            if count >= 25 : code.append(WARNING_TEXT)
             driver.find_element_by_class_name('community-footer') # check if loading is complete. Need this ?
             retry = False
         except NoSuchElementException:
