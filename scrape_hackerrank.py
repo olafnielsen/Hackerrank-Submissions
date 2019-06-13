@@ -5,6 +5,10 @@
 # Revision history:
 #   Olaf Nielsen / 4.6.2019 / first version. Tested on Windows 10 with python 3.6 and 3.7
 #
+# Future improvements/known bugs:
+#   - For some reason, selenium delivers only maximum 25 lines of code. It is not clear how to
+#     obtain remaining the lines, if there are more. 
+#
 # Description:
 '''
 Extracts code submissions from www.hackerrank.com by scraping the site.
@@ -17,15 +21,20 @@ Requires environment variables for hackerrank login : HACKERRANK_USER and HACKER
 
 Output is written to an Excel file (scrape_hackerrank_<username>.xlsx')
 '''
-# -------------------------------------------------------------------------------------
-import re, os, time, sys
+# ----------------------------------------------
+import re, os, time
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import TimeoutException
 from bs4 import BeautifulSoup
+import requests
 import lxml
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, Color, colors, Border, Side
 import pickle
+
+# When reading the code block, lines after line 25 are not visible to the selenium driver....
+WARNING_TEXT = '-- Warning: Some lines may be missing after this ! --'
 
 # ------------------------------------------------------------------------------------
 # writeToExcel
@@ -52,7 +61,7 @@ def writeToExcel(submissions, filename) :
     #
     currentRow = 2
     for challenge_text, value in sorted(submissions.items()):
-        challenge_href, language, timesubmitted, status, points, code_href, code = value
+        challenge_href, language, timesubmitted, status, points, _code_href, code = value
         #
         # column A : link to the challenge
         txt = challenge_text.replace('"', "'")
@@ -103,30 +112,29 @@ def find_indexLastPage(driver):
 def readCode(driver, url) :
     '''
     Reads the code block in a submission page 
-    (e.g. https://www.hackerrank.com/challenges/repeated-string/problem)
+    (e.g. https://www.hackerrank.com/challenges/matrix-rotation-algo/submissions/code/110553576)
     '''
     retry = True
     while retry :
+        code = []; count = 0
         try :    
             print (f'opening page {url}')
             driver.get(url)
-            time.sleep(5)
-            # print (driver.page_source)
-            codeBlock = driver.find_element_by_class_name('code-viewer') 
-            # print ('codeBlock.text', codeBlock.text)
-            driver.find_element_by_class_name('community-footer') # check if loading is complete
+            time.sleep(3)
+            driver.set_page_load_timeout(10)
+            #print (driver.page_source)
+            # For some reason, this loop at maximum of 25 lines. How to get the rest (they have same class name)?
+            for element in driver.find_elements_by_class_name(' CodeMirror-line ') : # starts and ends with ' '
+                code.append(element.text)
+                #print (element.text)
+                count += 1
+            if count == 25 : code.append(WARNING_TEXT)
+            driver.find_element_by_class_name('community-footer') # check if loading is complete. Need this ?
             retry = False
-        except NoSuchElementException :
+        except NoSuchElementException:
             print ('Retrying...')
-    #
-    code = []
-    #print ('codeBlock.text', codeBlock.text)
-    prevHasLineNumber = False     # two consecutive lines starting with number means a <cr>
-    for line in codeBlock.text.split('\n') :
-        hasLineNumber = re.search(r'^\d', line)
-        if not hasLineNumber : code.append(line)
-        elif prevHasLineNumber : code.append('')
-        prevHasLineNumber = hasLineNumber
+        except TimeoutException:
+            print ('Timeout - Retrying...')
     return [code]
 # end readCode
 
@@ -145,7 +153,8 @@ def hackerrank_readSubmissions(driver) :
         print (f'opening page {url}')
         driver.get(url)
         # print (driver.page_source)
-        # wait for the 'spinner' to complete. There must be a more elegant way to do this (google: invisibility_of_element_located)
+        # wait for the 'spinner' to complete. There must be a more elegant way to do this 
+        # (google: invisibility_of_element_located)
         time.sleep(3)   
         try :
            submissions = driver.find_element_by_class_name('submissions_list')
@@ -158,7 +167,7 @@ def hackerrank_readSubmissions(driver) :
         #
         if pageIndex == 1 : lastPageIndex = find_indexLastPage(driver)
         #
-        # switch from selenium to beautifulsoup (easier to use, I think ...):
+        # switch from selenium to beautifulsoup :
         soup = BeautifulSoup(submissions.get_attribute("innerHTML"), 'lxml')
         # print (soup.prettify())
         # 
@@ -172,7 +181,7 @@ def hackerrank_readSubmissions(driver) :
             points  = submission.find('div', class_='span1').p.text.strip()
             code_button = submission.find('a', class_='btn')
             code_href = 'https://www.hackerrank.com/' + code_button['href']
-            if challenge_text not in result:
+            if challenge_text not in result and status == 'Accepted':
                 result[challenge_text] = [challenge_href, language, timesubmitted, status, points, code_href]
         # end for submission in ...
         pageIndex += 1
@@ -189,8 +198,9 @@ def hackerrank_login(driver, usr, pwd):
     password = driver.find_element_by_name("password")
     username.send_keys(usr)
     password.send_keys(pwd) 
-    driver.find_element_by_xpath(\
-        '/html/body/div[4]/div/div/div[3]/div[2]/div/div/div[2]/div/div/div[2]/div[1]/form/div[4]/button').click()
+    # find_element_by_class_name should work, but it doesn't ("Compound class names not permitted"):
+    #driver.find_element_by_class_name('ui-btn ui-btn-large ui-btn-primary auth-button').click()
+    driver.find_element_by_xpath("//button[@class='ui-btn ui-btn-large ui-btn-primary auth-button']").click()
     time.sleep(3)
 # end hackerrank_login
 
@@ -208,8 +218,7 @@ def main():
         print ('Define env. var. with Hackerrank password ($env:HACKERRANK_PWD=....)')
         quit()
 
-    driver = webdriver.Chrome()  # could also use Firefox(), but Chrome starts faster.... 
-    print (type(driver))
+    driver = webdriver.Chrome()  
     try :
         hackerrank_login(driver, usr, pwd) 
         submissions = hackerrank_readSubmissions(driver)
