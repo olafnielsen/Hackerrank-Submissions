@@ -4,10 +4,8 @@
 #
 # Revision history:
 #   Olaf Nielsen / 4.6.2019 / first version. Tested on Windows 10 with python 3.6 and 3.7
-#
-# Future improvements/known bugs:
-#   - For some reason, selenium delivers only maximum 25 lines of code. It is not clear how to
-#     obtain remaining the lines, if there are more. 
+#   Olaf Nielsen / 14.6.2019 / hackerranck DOM changed. Additionally, allow for multiple 
+#                              solutions per challenge (i.e. different languages)
 #
 # Description:
 '''
@@ -33,8 +31,11 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, Color, colors, Border, Side
 import pickle
 
-# When reading the code block, lines after line 25 are not visible to the selenium driver....
-WARNING_TEXT = '-- Warning: Some lines may be missing after this ! --'
+# temporary file. No read for re-reading submissions already know from previous runs.
+SUBMISSIONS_FILENAME = 'submissions.pickle'   
+
+# Results are written this Excel file:
+OUTPUT_FILENAME      = 'hackerrank_submissions_' + os.getlogin() + '.xlsx'
 
 # ------------------------------------------------------------------------------------
 # writeToExcel
@@ -60,8 +61,10 @@ def writeToExcel(submissions, filename) :
     excelSheet.title = 'hackerrank submissions'  
     #
     currentRow = 2
-    for challenge_text, value in sorted(submissions.items()):
-        challenge_href, language, timesubmitted, status, points, _code_href, code = value
+    # write each entry in the submissions directory to the excel-sheet. 
+    # Items are sorted alphabetically by the text that identifies the challenge (first value in each list submissions[key])
+    for (challenge_href, language), value in sorted(submissions.items(), key=lambda x: x[1][0]):
+        challenge_text, timesubmitted, status, points, _submission_href, code = value
         #
         # column A : link to the challenge
         txt = challenge_text.replace('"', "'")
@@ -83,7 +86,7 @@ def writeToExcel(submissions, filename) :
         excelSheet.cell(row=currentRow, column=5, value=language)
         excelSheet[f'E{currentRow}'].alignment = Alignment(vertical='top')
         # column F : code submitted            
-        excelSheet.cell(row=currentRow, column=6, value='\n'.join(code))    
+        excelSheet.cell(row=currentRow, column=6, value='\n'.join(code).strip())    
         excelSheet[f'F{currentRow}'].alignment = Alignment(wrapText=True, vertical='top')
         excelSheet[f'F{currentRow}'].font = Font(bold=True, name='Courier New')
         excelSheet[f'F{currentRow}'].border = Border(left=Side(style='medium'), right=Side(style='medium'), 
@@ -107,36 +110,41 @@ def find_indexLastPage(driver):
 # end find_indexLastPage
 
 # -------------------------------------------------------------------------------------
-# readCode
+# readSubmission
 # -------------------------------------------------------------------------------------
-def readCode(driver, url) :
+def readSubmission(driver, url, count) :
     '''
     Reads the code block in a submission page 
-    (e.g. https://www.hackerrank.com/challenges/matrix-rotation-algo/submissions/code/110553576)
+    (e.g. https://www.hackerrank.com/challenges/matrix-rotation-algo/submissions/database/110553576)
     '''
-    retry = True
+    retry = True; lookForReady = True
+    count += 1
+    timeoutCount = 0
     while retry :
-        code = []; count = 0
+        code = [] 
         try :    
-            print (f'opening page {url}')
+            print (f'{count:>4} opening page {url}')
             driver.get(url)
-            time.sleep(3)
-            driver.set_page_load_timeout(10)
-            #print (driver.page_source)
-            # For some reason, this loop at maximum of 25 lines. How to get the rest (they have same class name)?
-            for element in driver.find_elements_by_class_name(' CodeMirror-line ') : # starts and ends with ' '
+            time.sleep(3)                                    # <- loading page is slow.
+            driver.set_page_load_timeout(10)                 # <- timeout check. If too slow, TimeoutException is raised
+            driver.find_element_by_class_name('page_footer') # <- check if loading is complete. If not, exception is NoSuchElementException raised.
+            lookForReady = False
+            for element in driver.find_elements_by_class_name(' CodeMirror-line ') : 
                 code.append(element.text)
-                #print (element.text)
-                count += 1
-            if count >= 25 : code.append(WARNING_TEXT)
-            driver.find_element_by_class_name('community-footer') # check if loading is complete. Need this ?
             retry = False
-        except NoSuchElementException:
-            print ('Retrying...')
+        except NoSuchElementException as e:
+            if lookForReady : print ('Page not ready - retrying...')
+            else : 
+                # either meaning the class ' CodeMirror-line ' is called something else, or simply,
+                # the page will for unknown reasons not load.
+                raise e    
         except TimeoutException:
+            timeoutCount += 1
+            if timeoutCount == 10 :
+                raise TimeoutException('Timeout - Something is wrong')
             print ('Timeout - Retrying...')
-    return [code]
-# end readCode
+    return [code], count
+# end readSubmission
 
 # -------------------------------------------------------------------------------------
 # hackerrank_readSubmissions
@@ -145,8 +153,8 @@ def hackerrank_readSubmissions(driver) :
     '''
     Determines all submissions. Then for each, reads the relevant code data.
     '''
-    result = {}
-    pageIndex = 1; lastPageIndex = 1
+    pageIndex = 1; lastPageIndex = 1; 
+    result = pickle.load(open(SUBMISSIONS_FILENAME, 'rb')) if os.path.exists(SUBMISSIONS_FILENAME) else {}
     # 
     while pageIndex <= lastPageIndex :
         url = 'https://www.hackerrank.com/submissions/all/page/' + str(pageIndex)
@@ -179,10 +187,16 @@ def hackerrank_readSubmissions(driver) :
             timesubmitted  = submission.find('div', class_='span2 submissions-time').p.text.strip()
             status  = submission.find('div', class_='span3').p.text.strip()
             points  = submission.find('div', class_='span1').p.text.strip()
-            code_button = submission.find('a', class_='btn')
-            code_href = 'https://www.hackerrank.com/' + code_button['href']
-            if challenge_text not in result and status == 'Accepted':
-                result[challenge_text] = [challenge_href, language, timesubmitted, status, points, code_href]
+            code_button = submission.find('a', class_='btn btn-inverse view-results backbone')
+            submission_href = 'https://www.hackerrank.com/' + code_button['href']
+            # note : until 13.6.19, links were on the form
+            # https://www.hackerrank.com/challenges/kangaroo/submissions/code/110668369
+            # new is, that also
+            # https://www.hackerrank.com/challenges/kangaroo/submissions/database/110668369
+            # works. Will use this instead because the page is cleaner and all code is visible (before only max 25 lines)
+            submission_href = submission_href.replace('/code/', '/database/')
+            if status == 'Accepted' and (challenge_href, language) not in result:
+                result[(challenge_href, language)] = [challenge_text, timesubmitted, status, points, submission_href]
         # end for submission in ...
         pageIndex += 1
     # end while 
@@ -199,7 +213,6 @@ def hackerrank_login(driver, usr, pwd):
     username.send_keys(usr)
     password.send_keys(pwd) 
     # find_element_by_class_name should work, but it doesn't ("Compound class names not permitted"):
-    #driver.find_element_by_class_name('ui-btn ui-btn-large ui-btn-primary auth-button').click()
     driver.find_element_by_xpath("//button[@class='ui-btn ui-btn-large ui-btn-primary auth-button']").click()
     time.sleep(3)
 # end hackerrank_login
@@ -208,7 +221,6 @@ def hackerrank_login(driver, usr, pwd):
 # main
 # -------------------------------------------------------------------------------------
 def main():
-    output_filename = 'hackerrank_submissions_' + os.getlogin() + '.xlsx'
     usr = os.getenv('HACKERRANK_USER')
     if not usr:
         print('Define env. var. with Hackerrank user name ($env:HACKERRANK_USER=....)')
@@ -217,25 +229,26 @@ def main():
     if not pwd :
         print ('Define env. var. with Hackerrank password ($env:HACKERRANK_PWD=....)')
         quit()
-
+    #
     driver = webdriver.Chrome()  
     try :
         hackerrank_login(driver, usr, pwd) 
         submissions = hackerrank_readSubmissions(driver)
+        print ('Number of submissions:', len(submissions))
         #
+        count = 0
         for key, val in submissions.items() :
-            *_, code_href = val
-            submissions[key].extend(readCode(driver, code_href))
-        writeToExcel(submissions, output_filename)
-        print ('result written to ' + output_filename)
+            *_, submission_href = val
+            submission, count = readSubmission(driver, submission_href, count)
+            submissions[key].extend(submission)
+        writeToExcel(submissions, OUTPUT_FILENAME)
+        print ('Result written to ' + OUTPUT_FILENAME)
     finally :
-        #pickle.dump(submissions, open('submissions_debug.pickle', 'wb')) # useful for testing....
+        ## pickle.dump(submissions, open(SUBMISSIONS_FILENAME, 'wb')) # useful for saving time for next run....
         driver.quit() # kills the browser...
 # main
 
 if __name__ == "__main__" :
-    #submissions = pickle.load(open('submissions_debug.pickle', 'rb')) # useful for testing the Excel output
-    #writeToExcel(submissions, 'testing.xlsx')
     try :
         main()
     except KeyboardInterrupt : print ('<ctrl>-c')
