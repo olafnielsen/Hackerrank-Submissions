@@ -21,6 +21,7 @@ Output is written to an Excel file (scrape_hackerrank_<username>.xlsx')
 '''
 # ----------------------------------------------
 import re, os, time
+import binascii
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException
 from selenium.common.exceptions import TimeoutException
@@ -61,10 +62,11 @@ def writeToExcel(submissions, filename) :
     excelSheet.title = 'hackerrank submissions'  
     #
     currentRow = 2
+
     # write each entry in the submissions directory to the excel-sheet. 
     # Items are sorted alphabetically by the text that identifies the challenge (first value in each list submissions[key])
-    for (challenge_href, language), value in sorted(submissions.items(), key=lambda x: x[1][0]):
-        challenge_text, timesubmitted, status, points, _submission_href, code = value
+    for (challenge_href, language), (challenge_text, timesubmitted, status, points, _submission_href, code) \
+            in sorted(submissions.items(), key=lambda x: x[1][0].upper()):
         #
         # column A : link to the challenge
         txt = challenge_text.replace('"', "'")
@@ -72,7 +74,6 @@ def writeToExcel(submissions, filename) :
                         value=f'=HYPERLINK("{challenge_href}", "{txt}")')  
         excelSheet[f'A{currentRow}'].alignment = Alignment(vertical='top')
         excelSheet[f'A{currentRow}'].font = Font(bold=True, color=colors.DARKBLUE, underline='single')
-
         # column B : time submitted
         excelSheet.cell(row=currentRow, column=2, value=timesubmitted)
         excelSheet[f'B{currentRow}'].alignment = Alignment(vertical='top')
@@ -147,16 +148,42 @@ def readSubmission(driver, url, count) :
 # end readSubmission
 
 # -------------------------------------------------------------------------------------
+# saveAlreadyDone
+# -------------------------------------------------------------------------------------
+def saveAlreadyDone(submissions):
+    '''Saves submissions done. Next run will use this file so that only incremental reading is necessary. Saves time!'''
+    pickle.dump(submissions, open(SUBMISSIONS_FILENAME, 'wb')) 
+# end saveAlreadyDone
+
+# -------------------------------------------------------------------------------------
+# getAlreadyDone
+# -------------------------------------------------------------------------------------
+def getAlreadyDone(): # return submissions
+    '''returns submissions already done during previous run'''
+    alreadyDone = {}
+    if os.path.exists(SUBMISSIONS_FILENAME) :
+        alreadyDone = pickle.load(open(SUBMISSIONS_FILENAME, 'rb')) 
+    return alreadyDone
+# end getAlreadyDone
+
+# -------------------------------------------------------------------------------------
 # hackerrank_readSubmissions
 # -------------------------------------------------------------------------------------
 def hackerrank_readSubmissions(driver) :
     '''
     Determines all submissions. Then for each, reads the relevant code data.
     '''
-    pageIndex = 1; lastPageIndex = 1; 
-    result = pickle.load(open(SUBMISSIONS_FILENAME, 'rb')) if os.path.exists(SUBMISSIONS_FILENAME) else {}
+    pageIndex, lastPageIndex = 1, 1
+    oldSubmissions = getAlreadyDone()
+    newSubmissions = {}
+    # some of the 'oldSubmissions' may not yet have the code part in them 
+    # (e.g. if the program was terminated abnormally in the previous).
+    # We'll just move those to 'newSubmissions':
+    for key, val in oldSubmissions.items():
+        if len(val) == 5 : # would be 6, if also the code has been read.
+            newSubmissions[key] = val
     # 
-    while pageIndex <= lastPageIndex :
+    while pageIndex <= lastPageIndex : 
         url = 'https://www.hackerrank.com/submissions/all/page/' + str(pageIndex)
         print (f'opening page {url}')
         driver.get(url)
@@ -193,14 +220,21 @@ def hackerrank_readSubmissions(driver) :
             # https://www.hackerrank.com/challenges/kangaroo/submissions/code/110668369
             # new is, that also
             # https://www.hackerrank.com/challenges/kangaroo/submissions/database/110668369
-            # works. Will use this instead because the page is cleaner and all code is visible (before only max 25 lines)
+            # works. Will use this instead because the page has all the code is visible (before only max 25 lines)
             submission_href = submission_href.replace('/code/', '/database/')
-            if status == 'Accepted' and (challenge_href, language) not in result:
-                result[(challenge_href, language)] = [challenge_text, timesubmitted, status, points, submission_href]
+            #
+            if (challenge_href, language) in oldSubmissions :
+                break  # we have the code information already (but Timesubmitted is no longer correct, and there may
+                       # have been new submissions to older problems).
+                       # Delete SUBMISSIONS_FILENAME to get a full run.
+            # if status == 'Accepted' and (challenge_href, language) not in newSubmissions:
+            if (challenge_href, language) not in newSubmissions:
+                newSubmissions[(challenge_href, language)] = [challenge_text, timesubmitted, status, points, submission_href]
         # end for submission in ...
         pageIndex += 1
-    # end while 
-    return result
+        if (challenge_href, language) in oldSubmissions : break
+    # end while  
+    return newSubmissions, oldSubmissions
 # end hackerrank_readSubmissions
  
 # -------------------------------------------------------------------------------------
@@ -231,20 +265,23 @@ def main():
         quit()
     #
     driver = webdriver.Chrome()  
+    hackerrank_login(driver, usr, pwd) 
+    #
     try :
-        hackerrank_login(driver, usr, pwd) 
-        submissions = hackerrank_readSubmissions(driver)
-        print ('Number of submissions:', len(submissions))
+        submissions, SubmissionsAlreadyDone = hackerrank_readSubmissions(driver)
+        print (f'Number of submissions (new+old): {len(submissions)}+{len(SubmissionsAlreadyDone)}')
         #
         count = 0
         for key, val in submissions.items() :
             *_, submission_href = val
             submission, count = readSubmission(driver, submission_href, count)
             submissions[key].extend(submission)
+        # merge new and already done submssions and write them to an excel file:
+        submissions.update(SubmissionsAlreadyDone)
         writeToExcel(submissions, OUTPUT_FILENAME)
         print ('Result written to ' + OUTPUT_FILENAME)
     finally :
-        ## pickle.dump(submissions, open(SUBMISSIONS_FILENAME, 'wb')) # useful for saving time for next run....
+        saveAlreadyDone(submissions)
         driver.quit() # kills the browser...
 # main
 
