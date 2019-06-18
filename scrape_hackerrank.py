@@ -6,6 +6,7 @@
 #   Olaf Nielsen / 4.6.2019 / first version. Tested on Windows 10 with python 3.6 and 3.7
 #   Olaf Nielsen / 14.6.2019 / hackerranck DOM changed. Additionally, allow for multiple 
 #                              solutions per challenge (i.e. different languages)
+#   Olaf Nielsen / 17.6.2019 / Added more information to column in the excel output.
 #
 # Description:
 '''
@@ -28,9 +29,14 @@ from selenium.common.exceptions import TimeoutException
 from bs4 import BeautifulSoup
 import requests
 import lxml
+from urllib.parse import urljoin
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, Color, colors, Border, Side
 import pickle
+
+SITE_URL = 'https://www.hackerrank.com'
+LOGIN_PAGE = urljoin(SITE_URL, 'auth/login')
+FIRST_SUBMISSION_PAGE = urljoin(SITE_URL, 'submissions/all/page/')
 
 # temporary file. No read for re-reading submissions already know from previous runs.
 SUBMISSIONS_FILENAME = 'submissions.pickle'   
@@ -45,9 +51,13 @@ def writeToExcel(submissions, filename) :
     """
     Writes submissions to an Excel file. Make sure the file is not already opened in Excel.
     """
+    def _hyperLinkOf(href, txt) :
+        txt = txt.replace('"', "'")
+        return f'=HYPERLINK("{challenge_href}", "{txt}")'
+    #
     workBook = Workbook()
     excelSheet = workBook.active
-    excelSheet.column_dimensions['A'].width = 35
+    excelSheet.column_dimensions['A'].width = 50
     excelSheet.column_dimensions['B'].width = 13
     excelSheet.column_dimensions['C'].width = 10
     excelSheet.column_dimensions['D'].width = 6
@@ -62,20 +72,22 @@ def writeToExcel(submissions, filename) :
     excelSheet.title = 'hackerrank submissions'  
     #
     currentRow = 2
-
     # write each entry in the submissions directory to the excel-sheet. 
     # Items are sorted alphabetically by the text that identifies the challenge (first value in each list submissions[key])
-    for (challenge_href, language), (challenge_text, timesubmitted, status, points, _submission_href, code) \
+    for (challenge_href, language), \
+            (challengeText, timeSubmitted, status, points, _submission_href, code) \
             in sorted(submissions.items(), key=lambda x: x[1][0].upper()):
+        # remove this line also to see the errors....
+        if status != 'Accepted' : continue
         #
-        # column A : link to the challenge
-        txt = challenge_text.replace('"', "'")
+        # column A : link to the challenge 
         excelSheet.cell(row=currentRow, column=1, 
-                        value=f'=HYPERLINK("{challenge_href}", "{txt}")')  
-        excelSheet[f'A{currentRow}'].alignment = Alignment(vertical='top')
+                        value=f'=HYPERLINK("{challenge_href}", "{challengeText}")')
+        # setting wrapText=True, makes the entire cell clickable. We don't want that (how to avoid this?)
+        excelSheet[f'A{currentRow}'].alignment = Alignment(wrapText=False, vertical='top')
         excelSheet[f'A{currentRow}'].font = Font(bold=True, color=colors.DARKBLUE, underline='single')
         # column B : time submitted
-        excelSheet.cell(row=currentRow, column=2, value=timesubmitted)
+        excelSheet.cell(row=currentRow, column=2, value=timeSubmitted)
         excelSheet[f'B{currentRow}'].alignment = Alignment(vertical='top')
         # column C : status
         excelSheet.cell(row=currentRow, column=3, value=status)
@@ -126,25 +138,42 @@ def readSubmission(driver, url, count) :
         try :    
             print (f'{count:>4} opening page {url}')
             driver.get(url)
-            time.sleep(3)                                    # <- loading page is slow.
-            driver.set_page_load_timeout(10)                 # <- timeout check. If too slow, TimeoutException is raised
-            driver.find_element_by_class_name('page_footer') # <- check if loading is complete. If not, exception is NoSuchElementException raised.
+            # Allow time for loading the page.
+            time.sleep(3)                                  
+            # Timeout check. If too slow, TimeoutException is raised
+            driver.set_page_load_timeout(10)          
+            # Check if loading is complete. If not, exception is NoSuchElementException raised.
+            driver.find_element_by_class_name('page_footer') 
             lookForReady = False
+            #
+            # Get the list of links ('theme') at the top of the page,
+            # e.g. Dashboard > SQL > Aggregation > Population Density Difference.
+            # Note : A few pages DON'T have this information, 
+            # e.g. https://www.hackerrank.com/challenges/triple-sum/submissions/database/88645926
+            theme = driver.find_element_by_css_selector('.content-header > div:nth-child(1) > div:nth-child(1)')
+            soup = BeautifulSoup(theme.get_attribute("innerHTML"), 'lxml')
+            theme = []
+            for link in soup.find_all('a', class_='backbone') :
+                href = SITE_URL + link['href']    # we don't really need this....
+                theme.append((href, link.text))
+            challengeText = ' > '.join([ t[1] for t in theme[1:]]).replace('"', "'")
+            #
+            # Obtain the code, line by line
             for element in driver.find_elements_by_class_name(' CodeMirror-line ') : 
                 code.append(element.text)
             retry = False
         except NoSuchElementException as e:
             if lookForReady : print ('Page not ready - retrying...')
             else : 
-                # either meaning the class ' CodeMirror-line ' is called something else, or simply,
+                # Either meaning the class ' CodeMirror-line ' is called something else, or simply,
                 # the page will for unknown reasons not load.
                 raise e    
         except TimeoutException:
             timeoutCount += 1
             if timeoutCount == 10 :
-                raise TimeoutException('Timeout - Something is wrong')
-            print ('Timeout - Retrying...')
-    return [code], count
+                raise TimeoutException('Timeout - Something is wrong with the internet connection')
+            print (f'Timeout {timeoutCount} - Retrying')
+    return [code], challengeText, count
 # end readSubmission
 
 # -------------------------------------------------------------------------------------
@@ -158,44 +187,46 @@ def saveAlreadyDone(submissions):
 # -------------------------------------------------------------------------------------
 # getAlreadyDone
 # -------------------------------------------------------------------------------------
-def getAlreadyDone(): # return submissions
+def getAlreadyDone(): # 
     '''returns submissions already done during previous run'''
-    alreadyDone = {}
+    alreadyDoneSubmissions = {}
+    stillToDoSubmissions = {}
+    file = {}
     if os.path.exists(SUBMISSIONS_FILENAME) :
-        alreadyDone = pickle.load(open(SUBMISSIONS_FILENAME, 'rb')) 
-    return alreadyDone
+        file = pickle.load(open(SUBMISSIONS_FILENAME, 'rb')) 
+    # some values may not yet have the code part in them 
+    # (e.g. if the program was terminated abnormally in the previous run).
+    # We'll just move those to 'stillToDoSubmissions':
+    for key, val in file.items() :
+        if len(val) == 6 :
+            alreadyDoneSubmissions[key] = val
+        else :
+            stillToDoSubmissions[key] = val
+    return alreadyDoneSubmissions, stillToDoSubmissions
 # end getAlreadyDone
 
 # -------------------------------------------------------------------------------------
-# hackerrank_readSubmissions
+# getAllSubmissions
 # -------------------------------------------------------------------------------------
-def hackerrank_readSubmissions(driver) :
+def getAllSubmissions(driver) :
     '''
     Determines all submissions. Then for each, reads the relevant code data.
     '''
     pageIndex, lastPageIndex = 1, 1
-    oldSubmissions = getAlreadyDone()
-    newSubmissions = {}
-    # some of the 'oldSubmissions' may not yet have the code part in them 
-    # (e.g. if the program was terminated abnormally in the previous).
-    # We'll just move those to 'newSubmissions':
-    for key, val in oldSubmissions.items():
-        if len(val) == 5 : # would be 6, if also the code has been read.
-            newSubmissions[key] = val
-    # 
+    oldSubmissions, newSubmissions = getAlreadyDone()
     while pageIndex <= lastPageIndex : 
-        url = 'https://www.hackerrank.com/submissions/all/page/' + str(pageIndex)
+        url = FIRST_SUBMISSION_PAGE + str(pageIndex)
         print (f'opening page {url}')
         driver.get(url)
         # print (driver.page_source)
-        # wait for the 'spinner' to complete. There must be a more elegant way to do this 
+        # wait for the 'spinner' to complete. There must be a more elegant way to do this ?
         # (google: invisibility_of_element_located)
         time.sleep(3)   
         try :
            submissions = driver.find_element_by_class_name('submissions_list')
            # print (submissions.get_attribute("innerHTML"))
            # check if loading is complete (exception raised, if not)
-           driver.find_element_by_class_name('pagination-sub')   # this comes after the pagination block.
+           driver.find_element_by_class_name('pagination-sub')  
         except NoSuchElementException :
             print ('Retrying...')
             continue
@@ -208,14 +239,15 @@ def hackerrank_readSubmissions(driver) :
         # 
         for submission in soup.find_all('div', class_='chronological-submissions-list-view') :
             challenge = submission.find('a', class_='challenge-slug')
-            challenge_href = 'https://www.hackerrank.com' + challenge['href']+ '/problem'
-            challenge_text = challenge.text
+            challenge_href = urljoin(SITE_URL, challenge['href'])
+            # wait with the challengeText until we get to the code page....
+            challengeText = challenge.text  # may be overwritten later....
             language       = submission.find('div', class_='span2 submissions-language').p.text.strip() 
-            timesubmitted  = submission.find('div', class_='span2 submissions-time').p.text.strip()
+            timeSubmitted  = submission.find('div', class_='span2 submissions-time').p.text.strip()
             status  = submission.find('div', class_='span3').p.text.strip()
             points  = submission.find('div', class_='span1').p.text.strip()
             code_button = submission.find('a', class_='btn btn-inverse view-results backbone')
-            submission_href = 'https://www.hackerrank.com/' + code_button['href']
+            submission_href = urljoin(SITE_URL, code_button['href'])
             # note : until 13.6.19, links were on the form
             # https://www.hackerrank.com/challenges/kangaroo/submissions/code/110668369
             # new is, that also
@@ -224,24 +256,27 @@ def hackerrank_readSubmissions(driver) :
             submission_href = submission_href.replace('/code/', '/database/')
             #
             if (challenge_href, language) in oldSubmissions :
-                break  # we have the code information already (but Timesubmitted is no longer correct, and there may
+                break  # we have the code information already (but timeSubmitted is no longer correct, and there may
                        # have been new submissions to older problems).
                        # Delete SUBMISSIONS_FILENAME to get a full run.
             # if status == 'Accepted' and (challenge_href, language) not in newSubmissions:
             if (challenge_href, language) not in newSubmissions:
-                newSubmissions[(challenge_href, language)] = [challenge_text, timesubmitted, status, points, submission_href]
+                # only one submission per challenge is read. The first encountered is also the latest.
+                if status.startswith('Terminated due') : status = 'Timeout'
+                newSubmissions[(challenge_href, language)] = [challengeText, timeSubmitted, status, points, submission_href]
         # end for submission in ...
+        #
         pageIndex += 1
         if (challenge_href, language) in oldSubmissions : break
     # end while  
     return newSubmissions, oldSubmissions
-# end hackerrank_readSubmissions
+# end getAllSubmissions
  
 # -------------------------------------------------------------------------------------
-# hackerrank_login
+# site_login
 # -------------------------------------------------------------------------------------
-def hackerrank_login(driver, usr, pwd):
-    driver.get('https://www.hackerrank.com/auth/login?h_l=body_middle_left_button&h_r=login')
+def site_login(driver, usr, pwd):
+    driver.get(LOGIN_PAGE)
     username = driver.find_element_by_name("username")
     password = driver.find_element_by_name("password")
     username.send_keys(usr)
@@ -249,7 +284,7 @@ def hackerrank_login(driver, usr, pwd):
     # find_element_by_class_name should work, but it doesn't ("Compound class names not permitted"):
     driver.find_element_by_xpath("//button[@class='ui-btn ui-btn-large ui-btn-primary auth-button']").click()
     time.sleep(3)
-# end hackerrank_login
+# end site_login
 
 # -------------------------------------------------------------------------------------
 # main
@@ -264,25 +299,32 @@ def main():
         print ('Define env. var. with Hackerrank password ($env:HACKERRANK_PWD=....)')
         quit()
     #
+    # open a browser (uses chromedriver.exe) and login
     driver = webdriver.Chrome()  
-    hackerrank_login(driver, usr, pwd) 
+    site_login(driver, usr, pwd) 
     #
+    # keep this out of the try statement below (because the recover case will not work correctly)
+    submissions, submissionsAlreadyDone = getAllSubmissions(driver)
     try :
-        submissions, SubmissionsAlreadyDone = hackerrank_readSubmissions(driver)
-        print (f'Number of submissions (new+old): {len(submissions)}+{len(SubmissionsAlreadyDone)}')
-        #
-        count = 0
-        for key, val in submissions.items() :
+        count = len(submissionsAlreadyDone)
+        print (f'Number of submissions (new + old): {len(submissions)} + {count}')
+        for key, val in submissions.items():
             *_, submission_href = val
-            submission, count = readSubmission(driver, submission_href, count)
+            submission, challengeText_Temp, count = readSubmission(driver, submission_href, count)
             submissions[key].extend(submission)
+            if challengeText_Temp != '' : submissions[key][0] = challengeText_Temp
         # merge new and already done submssions and write them to an excel file:
-        submissions.update(SubmissionsAlreadyDone)
+        submissions.update(submissionsAlreadyDone)
+        submissionsAlreadyDone = {}
         writeToExcel(submissions, OUTPUT_FILENAME)
         print ('Result written to ' + OUTPUT_FILENAME)
     finally :
+        # for fast recovery, so that pages already read are not repeated after a crash or ctrl-c
+        # Note: if doesn't work correctly, if this happens during reading the 
+        if submissionsAlreadyDone != {} : submissions.update(submissionsAlreadyDone)
         saveAlreadyDone(submissions)
-        driver.quit() # kills the browser...
+        # kill the browser
+        driver.quit() 
 # main
 
 if __name__ == "__main__" :
