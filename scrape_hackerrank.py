@@ -7,21 +7,24 @@
 #   Olaf Nielsen / 14.6.2019 / hackerranck DOM changed. Additionally, allow for multiple 
 #                              solutions per challenge (i.e. different languages)
 #   Olaf Nielsen / 17.6.2019 / Added more information to column in the excel output.
+#   Olaf Nielsen / 21.6.2019 / json instead of pickle to keep recovery data.
 #
 # Description:
 '''
 Extracts code submissions from www.hackerrank.com by scraping the site.
 
-Uses python libraries selenium, BeautifulSoup, openpyxl.
-Furthermore, selenium uses the chrome browser and it requires chromedriver.exe
+Uses python libraries selenium, BeautifulSoup, openpyxl, json.
+selenium uses the chrome browser, and it requires chromedriver.exe
 (http://chromedriver.chromium.org/downloads)
 
 Requires environment variables for hackerrank login : HACKERRANK_USER and HACKERRANK_PWD.
 
-Output is written to an Excel file (scrape_hackerrank_<username>.xlsx')
+Output is written to an Excel file (scrape_hackerrank_<username>.xlsx'). Also, output is 
+written to a json-file, which will be used next time the program is run in order to prevent
+re-reading pages already known.
 '''
 # ----------------------------------------------
-import re, os, time
+import re, os, sys, time
 import binascii
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException
@@ -33,13 +36,14 @@ from urllib.parse import urljoin
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, Color, colors, Border, Side
 import pickle
+import json
 
 SITE_URL = 'https://www.hackerrank.com'
 LOGIN_PAGE = urljoin(SITE_URL, 'auth/login')
 FIRST_SUBMISSION_PAGE = urljoin(SITE_URL, 'submissions/all/page/')
 
 # temporary file. No read for re-reading submissions already know from previous runs.
-SUBMISSIONS_FILENAME = 'submissions.pickle'   
+SUBMISSIONS_FILENAME = 'submissions.json'   
 
 # Results are written this Excel file:
 OUTPUT_FILENAME      = 'hackerrank_submissions_' + os.getlogin() + '.xlsx'
@@ -130,9 +134,7 @@ def readSubmission(driver, url, count) :
     Reads the code block in a submission page 
     (e.g. https://www.hackerrank.com/challenges/matrix-rotation-algo/submissions/database/110553576)
     '''
-    retry = True; lookForReady = True
-    count += 1
-    timeoutCount = 0
+    retry = True; count += 1; timeoutCount = 0
     while retry :
         code = [] 
         try :    
@@ -143,8 +145,7 @@ def readSubmission(driver, url, count) :
             # Timeout check. If too slow, TimeoutException is raised
             driver.set_page_load_timeout(10)          
             # Check if loading is complete. If not, exception is NoSuchElementException raised.
-            driver.find_element_by_class_name('page_footer') 
-            lookForReady = False
+            driver.find_element_by_class_name('page_footer')
             #
             # Get the list of links ('theme') at the top of the page,
             # e.g. Dashboard > SQL > Aggregation > Population Density Difference.
@@ -163,11 +164,10 @@ def readSubmission(driver, url, count) :
                 code.append(element.text)
             retry = False
         except NoSuchElementException as e:
-            if lookForReady : print ('Page not ready - retrying...')
-            else : 
-                # Either meaning the class ' CodeMirror-line ' is called something else, or simply,
-                # the page will for unknown reasons not load.
-                raise e    
+            timeoutCount += 1
+            if timeoutCount == 2 :
+                raise e
+            print ('Page not ready - retrying...')
         except TimeoutException:
             timeoutCount += 1
             if timeoutCount == 10 :
@@ -180,8 +180,12 @@ def readSubmission(driver, url, count) :
 # saveAlreadyDone
 # -------------------------------------------------------------------------------------
 def saveAlreadyDone(submissions):
-    '''Saves submissions done. Next run will use this file so that only incremental reading is necessary. Saves time!'''
-    pickle.dump(submissions, open(SUBMISSIONS_FILENAME, 'wb')) 
+    '''Saves submissions done. Next run will use this file so that only incremental reading is necessary.'''
+    with open(SUBMISSIONS_FILENAME, 'w') as file: 
+        # json only allows strings as keys. Here the key consists of an url and language, 
+        # both not containing '|', so we can do a join on this character.
+        json.dump({'|'.join(key): val for key, val in submissions.items()}, file, indent=2)
+    # pickle.dump(submissions, open(SUBMISSIONS_FILENAME, 'wb')) 
 # end saveAlreadyDone
 
 # -------------------------------------------------------------------------------------
@@ -191,17 +195,20 @@ def getAlreadyDone(): #
     '''returns submissions already done during previous run'''
     alreadyDoneSubmissions = {}
     stillToDoSubmissions = {}
-    file = {}
+    submissions = {}
     if os.path.exists(SUBMISSIONS_FILENAME) :
-        file = pickle.load(open(SUBMISSIONS_FILENAME, 'rb')) 
+        # submissions = pickle.load(open(SUBMISSIONS_FILENAME, 'rb')) 
+        with open(SUBMISSIONS_FILENAME, 'r') as file: 
+            submissions = json.load(file)   # keys are strings on the form 'url|language'
+    #
     # some values may not yet have the code part in them 
     # (e.g. if the program was terminated abnormally in the previous run).
     # We'll just move those to 'stillToDoSubmissions':
-    for key, val in file.items() :
+    for key, val in submissions.items() :
         if len(val) == 6 :
-            alreadyDoneSubmissions[key] = val
+            alreadyDoneSubmissions[tuple(key.split('|'))] = val
         else :
-            stillToDoSubmissions[key] = val
+            stillToDoSubmissions[tuple(key.split('|'))] = val
     return alreadyDoneSubmissions, stillToDoSubmissions
 # end getAlreadyDone
 
