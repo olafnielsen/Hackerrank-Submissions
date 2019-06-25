@@ -326,8 +326,8 @@ def main():
         writeToExcel(submissions, OUTPUT_FILENAME)
         print ('Result written to ' + OUTPUT_FILENAME)
     finally :
-        # for fast recovery, so that pages already read are not repeated after a crash or ctrl-c
-        # Note: if doesn't work correctly, if this happens during reading the 
+        # For fast recovery, so that pages already read are not repeated after a crash or ctrl-c
+        # Note: it doesn't work correctly, if this happens during reading the submission pages (getAllSubmissions)
         if submissionsAlreadyDone != {} : submissions.update(submissionsAlreadyDone)
         saveAlreadyDone(submissions)
         # kill the browser
