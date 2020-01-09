@@ -9,5 +9,5 @@ python3 libraries bs4, selenium, lxml, requests, openpyxl
 Environment variables for hackerrank login must be set: HACKERRANK_USER and HACKERRANK_PWD.
 
 selenium uses the chrome browser, and it requires chromedriver.exe
-(http://chromedriver.chromium.org/downloads). 
+(http://chromedriver.chromium.org/downloads).  $PATH must contain the directory where this driver is located.
 Tested with chromedriver version 74 (version number depends on the chrome browser version).
